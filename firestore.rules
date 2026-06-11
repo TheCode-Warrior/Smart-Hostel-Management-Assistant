@@ -1,0 +1,259 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ==================== HELPER FUNCTIONS ====================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && getUserData().role == 'admin';
+    }
+    
+    function isMessStaff() {
+      return isAuthenticated() && getUserData().role == 'messStaff';
+    }
+    
+    function isStudent() {
+      return isAuthenticated() && getUserData().role == 'student';
+    }
+    
+    function isStaff() {
+      return isAuthenticated() && (isAdmin() || isMessStaff());
+    }
+    
+    // ==================== USERS COLLECTION ====================
+    // ✅ FIXED: Allow authenticated users to read all users (for notifications)
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if request.auth.uid == userId || isAdmin();
+      allow create: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+    
+    // ==================== STUDENTS COLLECTION ====================
+
+match /students/{studentId} {
+  // Students can read their own, staff can read all
+  allow read: if isAuthenticated() && (
+    request.auth.uid == studentId || isStaff()
+  );
+  
+  allow write: if request.auth.uid == studentId || isStaff();
+  allow delete: if isAdmin();
+  
+  allow update: if isAdmin() &&
+    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+      'messMonthlyFees',
+      'feePlan',
+      'hostelSemesterFeeSelected',
+      'messMonthlyFeeSelected'
+    ]);
+}
+    
+    // ==================== HOSTEL SETTINGS ====================
+    
+    match /hostelSettings/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ==================== MESS MENU ====================
+    
+    match /messMenuDaily/{document} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    match /hostelSettings/messMenu {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    // ==================== FEES COLLECTION ====================
+    
+    match /fees/{feeId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow create: if isStaff();
+      allow update: if isStaff() || (
+        isStudent() && 
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paymentRequestStatus', 'paymentRequestMethod', 'paymentRequestNote', 'paymentRequestDate'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // ==================== FEE REQUESTS COLLECTION ====================
+    
+    match /feeRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow create: if isAuthenticated() && 
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      allow update: if isStaff() && (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'approvedBy', 'approvedByName', 'approvedAt', 
+          'receiptNumber', 'rejectedBy', 'rejectionReason', 'rejectedAt'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // ==================== ROOMS COLLECTION ====================
+    
+    match /rooms/{roomId} {
+  allow read: if isAuthenticated();
+  allow create: if isStaff();
+  allow update: if isStaff();  // Staff can update all room fields
+  allow delete: if isAdmin();
+}
+    
+    // ==================== ATTENDANCE COLLECTION ====================
+    
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+    
+    // ==================== COMPLAINTS COLLECTION ====================
+    
+    match /complaints/{complaintId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow create: if isAuthenticated() && (
+        request.resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow update: if isStaff() || (
+        isStudent() && 
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'studentRating', 'studentFeedback'
+        ])
+      );
+      allow delete: if isAdmin();
+    }
+    
+      // ==================== ✅ FIXED: NOTIFICATIONS COLLECTION ====================
+    match /notifications/{notificationId} {
+      // Anyone can read their own notifications, staff can read all
+      allow read: if isAuthenticated() && 
+        (resource.data.userId == request.auth.uid || isStaff());
+      
+      // ✅ CRITICAL FIX: Allow any authenticated user to create notifications
+      allow create: if isAuthenticated();
+      
+      // Users can mark their own notifications as read
+      allow update: if isAuthenticated() && 
+        ((resource.data.userId == request.auth.uid && 
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead'])) ||
+         isStaff());
+      
+      allow delete: if isAdmin();
+    }
+    
+ 
+
+    // ==================== ANNOUNCEMENTS COLLECTION ====================
+match /announcements/{announcementId} {
+  allow read: if isAuthenticated();
+  allow create: if isStaff();
+  allow update: if isAuthenticated();  // ✅ Allow any authenticated user to update
+  allow delete: if isAdmin();
+}
+    
+    // ==================== MESS TOKENS COLLECTION ====================
+    match /messTokens/{tokenId} {
+      allow read: if isAuthenticated();      // ✅ Simple - any authenticated user can read
+      allow create: if isAdmin() || isMessStaff();
+      allow update: if isMessStaff();
+      allow delete: if isAdmin();
+    }
+
+    // ==================== MEAL RECORDS ====================
+    
+    match /mealRecords/{recordId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow list: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow create: if isMessStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    // ==================== MEAL CONSUMPTION ====================
+    
+    match /mealConsumption/{docId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid || isStaff()
+      );
+      allow create: if isMessStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    // ==================== MEAL SUBSCRIPTIONS - SIMPLIFIED ====================
+    match /mealSubscriptions/{subscriptionId} {
+      // ✅ SIMPLE: Any authenticated user can read any subscription
+      allow read: if isAuthenticated();
+      
+      // Students can create their own subscription
+      allow create: if isAuthenticated() && 
+        request.resource.data.studentId == request.auth.uid;
+      
+      // Students can update their own subscription
+      allow update: if isAuthenticated() && 
+        resource.data.studentId == request.auth.uid;
+      
+      allow delete: if isAdmin();
+    }
+
+    // ==================== CHATBOT CONVERSATIONS COLLECTION ====================
+match /chatbot_conversations/{sessionId} {
+  // Users can read their own conversations
+  allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+  
+  // Users can create their own conversations
+  allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+  
+  // Users can update their own conversations (for ending session)
+  allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+  
+  // Users can delete their own conversations
+  allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+  
+  // Messages subcollection
+  match /messages/{messageId} {
+    allow read: if isAuthenticated() && 
+      get(/databases/$(database)/documents/chatbot_conversations/$(sessionId)).data.userId == request.auth.uid;
+    
+    allow create: if isAuthenticated() && 
+      get(/databases/$(database)/documents/chatbot_conversations/$(sessionId)).data.userId == request.auth.uid;
+    
+    allow update: if isAuthenticated() && 
+      get(/databases/$(database)/documents/chatbot_conversations/$(sessionId)).data.userId == request.auth.uid;
+    
+    allow delete: if isAuthenticated() && 
+      get(/databases/$(database)/documents/chatbot_conversations/$(sessionId)).data.userId == request.auth.uid;
+  }
+}
+
+}
+}
